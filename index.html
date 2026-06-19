@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Jua&family=Dongle:wght@400;700&display=swap" rel="stylesheet">
 
-    <!-- MediaPipe 제거 → 순수 웹 API로 교체 -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
 
     <style>
         :root {
@@ -533,7 +533,6 @@
             width: 100%;
             height: auto;
             display: block;
-            transform: scaleX(-1);
         }
 
         #webcam { display: none; }
@@ -584,6 +583,125 @@
             opacity: 0.8;
         }
 
+        /* ── 영상 갤러리 모달 ── */
+        .gallery-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            background: rgba(40, 25, 15, 0.72);
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .gallery-modal.show { display: flex; }
+
+        .gallery-modal-inner {
+            background: var(--white);
+            border-radius: 22px;
+            border: 4px solid var(--brown);
+            width: 100%;
+            max-width: 720px;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.4);
+        }
+
+        .gallery-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            background: var(--brown);
+            color: var(--cream);
+        }
+
+        .gallery-header h3 {
+            margin: 0;
+            font-family: 'Jua', sans-serif;
+            font-size: 19px;
+        }
+
+        .gallery-close {
+            background: rgba(255,255,255,0.15);
+            border: none;
+            color: var(--cream);
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .gallery-close:hover { background: rgba(255,255,255,0.3); }
+
+        .gallery-body {
+            padding: 18px;
+            overflow-y: auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 14px;
+        }
+
+        .gallery-empty {
+            grid-column: 1 / -1;
+            text-align: center;
+            color: #999;
+            padding: 40px 10px;
+            font-family: 'Dongle', sans-serif;
+            font-weight: 700;
+            font-size: 20px;
+        }
+
+        .gallery-item {
+            border: 2px solid #e0c99a;
+            border-radius: 14px;
+            overflow: hidden;
+            background: #fffdf5;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .gallery-item video {
+            width: 100%;
+            height: 140px;
+            object-fit: cover;
+            background: #000;
+            display: block;
+        }
+
+        .gallery-item-info {
+            padding: 8px 10px 10px;
+        }
+
+        .gallery-item-date {
+            font-size: 12px;
+            color: #999;
+            margin-bottom: 6px;
+        }
+
+        .gallery-item-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .gallery-item-actions button {
+            flex: 1;
+            font-family: 'Jua', sans-serif;
+            font-size: 12px;
+            padding: 7px 4px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            color: white;
+        }
+
+        .gallery-btn-dl   { background: var(--green); }
+        .gallery-btn-del  { background: #c0392b; }
+
         /* ── 반응형 ── */
         @media (max-width: 500px) {
             .tab-content { padding: 18px 14px; }
@@ -603,7 +721,7 @@
             }
             header, .progress-bar, .btn, .section-title, .drag-hint,
             .drag-handle, .btn-container, .autosave-badge, #toast,
-            .step-complete-msg, .stage-steps, #status-msg, #rec-timer { display: none !important; }
+            .step-complete-msg, .stage-steps, #status-msg, #rec-timer, .gallery-modal { display: none !important; }
 
             .role-grid { display: block; }
             .role-card {
@@ -889,6 +1007,10 @@
                 </div>
             </div>
 
+            <div class="btn-container" style="margin-top:4px;">
+                <button class="btn" style="background:#6c5ce7;" onclick="openGallery()">📁 내 영상 갤러리</button>
+            </div>
+
             <!-- 캔버스 / 미리보기 영상 -->
             <div class="canvas-container" id="canvas-wrap">
                 <video id="webcam" autoplay playsinline muted style="display:none;"></video>
@@ -898,6 +1020,20 @@
             </div>
         </div>
     </div>
+
+    <!-- ════════ 영상 갤러리 모달 ════════ -->
+    <div id="gallery-modal" class="gallery-modal">
+        <div class="gallery-modal-inner">
+            <div class="gallery-header">
+                <h3>📁 내 영상 갤러리</h3>
+                <button class="gallery-close" onclick="closeGallery()">✕</button>
+            </div>
+            <div class="gallery-body" id="gallery-body">
+                <div class="gallery-empty">아직 저장된 영상이 없어요.</div>
+            </div>
+        </div>
+    </div>
+    <!-- ════════ // 갤러리 모달 끝 ════════ -->
 
     <!-- 토스트 알림 -->
     <div id="toast"></div>
@@ -1277,6 +1413,12 @@ const canvas  = document.getElementById('stage-canvas');
 const ctx     = canvas.getContext('2d');
 const preview = document.getElementById('preview-video');
 
+// 인물 마스크 합성용 오프스크린 캔버스
+const offCanvas = document.createElement('canvas');
+offCanvas.width  = canvas.width;
+offCanvas.height = canvas.height;
+const offCtx = offCanvas.getContext('2d');
+
 let camStream   = null;   // MediaStream (video+audio)
 let bgImage     = null;
 let rafId       = null;   // requestAnimationFrame ID
@@ -1388,6 +1530,10 @@ async function startCamera() {
 
     try { await video.play(); } catch(e) { console.warn('video.play 실패:', e); }
 
+    // 인물 분리(세그멘테이션) 초기화 시도 — 실패해도 카메라는 정상 진행
+    setStatus('⏳ 인물 분리 기능을 준비 중이에요...', '');
+    await initSegmentation();
+
     // 캔버스에 실시간으로 그리기 시작
     canvas.style.display = 'block';
     preview.style.display = 'none';
@@ -1396,9 +1542,60 @@ async function startCamera() {
 
     camBtn.disabled = false;
     camBtn.textContent = '📷 카메라 켜기';
-    setStatus('🎭 카메라 준비 완료! 배경을 올리거나 바로 녹화할 수 있어요.', 'ok');
+    setStatus(segmentationReady
+        ? '🎭 카메라 준비 완료! 배경을 올리면 인물만 쏙 합성돼요.'
+        : '🎭 카메라 준비 완료! (인물 분리 기능 없이 일반 합성으로 동작해요)', 'ok');
     showStep(2);
     showToast('📷 카메라가 켜졌어요!');
+}
+
+/* ── 인물 분리(세그멘테이션) 초기화 ── */
+let selfieSegmentation = null;
+let segmentationReady = false;
+let latestSegMask = null;     // 가장 최근 세그멘테이션 결과 마스크
+let segmentationBusy = false;
+
+function initSegmentation() {
+    return new Promise(resolve => {
+        if (typeof SelfieSegmentation === 'undefined') {
+            console.warn('SelfieSegmentation 라이브러리를 불러오지 못했어요. 일반 합성 모드로 진행합니다.');
+            segmentationReady = false;
+            return resolve();
+        }
+
+        try {
+            selfieSegmentation = new SelfieSegmentation({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+            });
+            selfieSegmentation.setOptions({ modelSelection: 1 });
+            selfieSegmentation.onResults((results) => {
+                latestSegMask = results.segmentationMask;
+                segmentationBusy = false;
+            });
+
+            // 첫 프레임 전송 — 성공 여부로 사용 가능 여부 판단
+            const timeout = setTimeout(() => {
+                console.warn('세그멘테이션 초기화 시간 초과. 일반 합성 모드로 진행합니다.');
+                segmentationReady = false;
+                resolve();
+            }, 4000);
+
+            selfieSegmentation.send({ image: video }).then(() => {
+                clearTimeout(timeout);
+                segmentationReady = true;
+                resolve();
+            }).catch(err => {
+                clearTimeout(timeout);
+                console.warn('세그멘테이션 초기화 실패:', err);
+                segmentationReady = false;
+                resolve();
+            });
+        } catch(err) {
+            console.warn('세그멘테이션 생성 실패:', err);
+            segmentationReady = false;
+            resolve();
+        }
+    });
 }
 
 /* ── 캔버스 렌더 루프 ── */
@@ -1411,19 +1608,33 @@ function drawLoop() {
         return;
     }
 
+    // 세그멘테이션이 준비됐다면 매 프레임 새 마스크 요청 (이미 처리 중이면 건너뜀)
+    if (segmentationReady && selfieSegmentation && !segmentationBusy) {
+        segmentationBusy = true;
+        selfieSegmentation.send({ image: video }).catch(() => { segmentationBusy = false; });
+    }
+
     ctx.save();
 
-    // 좌우 반전 (거울 모드)
-    ctx.translate(canvas.width, 0);
-    ctx.scale(-1, 1);
-
-    if (bgImage) {
-        // 배경 이미지 위에 카메라 영상 올리기
+    if (bgImage && segmentationReady && latestSegMask) {
+        // ── 정확한 인물 분리 합성 ──
+        // 1) 배경 이미지를 먼저 깐다
         ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
-        // 카메라를 반투명하게 합성 (배경 합성 느낌)
-        ctx.globalAlpha = 0.92;
+
+        // 2) 오프스크린에 "사람만" 그려서 올린다 (마스크로 잘라내기)
+        offCtx.save();
+        offCtx.clearRect(0, 0, offCanvas.width, offCanvas.height);
+        offCtx.drawImage(latestSegMask, 0, 0, offCanvas.width, offCanvas.height);
+        offCtx.globalCompositeOperation = 'source-in';
+        offCtx.drawImage(video, 0, 0, offCanvas.width, offCanvas.height);
+        offCtx.restore();
+
+        ctx.drawImage(offCanvas, 0, 0, canvas.width, canvas.height);
+
+    } else if (bgImage) {
+        // 세그멘테이션 미지원 환경 — 배경 위에 카메라 영상을 그대로 겹쳐 보여줌
+        ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        ctx.globalAlpha = 1;
     } else {
         // 배경 없을 때: 카메라 영상만
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -1529,9 +1740,16 @@ function startRecording() {
         const blob = new Blob(recordedChunks, { type: mimeType || 'video/webm' });
         videoUrl = URL.createObjectURL(blob);
         window.__lastRecordingMime = mimeType || 'video/webm';
-        setStatus('✅ 녹화 완료! 미리보기로 확인하고 저장해 보세요.', 'ok');
-        showToast('🎬 촬영 완료!');
+        setStatus('✅ 녹화 완료! 자동으로 갤러리에 저장됐어요.', 'ok');
+        showToast('🎬 촬영 완료! 갤러리에 저장 중...');
         showStep(3);
+
+        // 갤러리(IndexedDB)에 자동 저장
+        saveRecordingToGallery(blob, mimeType || 'video/webm').then(() => {
+            showToast('📁 갤러리에 저장되었어요!');
+        }).catch(err => {
+            console.warn('갤러리 자동 저장 실패:', err);
+        });
     };
 
     try {
@@ -1634,6 +1852,13 @@ function releaseCameraTracks() {
         camStream.getTracks().forEach(track => track.stop());
         camStream = null;
     }
+    if (selfieSegmentation) {
+        try { selfieSegmentation.close(); } catch(e) {}
+        selfieSegmentation = null;
+    }
+    segmentationReady = false;
+    latestSegMask = null;
+    segmentationBusy = false;
     stopTimer();
 }
 
@@ -1652,6 +1877,151 @@ function stopCameraStream() {
 }
 
 window.addEventListener('beforeunload', releaseCameraTracks);
+
+/* ─────────────────────────────────────────
+   영상 갤러리 (IndexedDB)
+───────────────────────────────────────── */
+const GALLERY_DB_NAME = 'ddong_gallery_db';
+const GALLERY_STORE = 'recordings';
+let galleryDB = null;
+
+function openGalleryDB() {
+    return new Promise((resolve, reject) => {
+        if (galleryDB) return resolve(galleryDB);
+        if (!window.indexedDB) return reject(new Error('IndexedDB 미지원'));
+
+        const req = indexedDB.open(GALLERY_DB_NAME, 1);
+        req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(GALLERY_STORE)) {
+                db.createObjectStore(GALLERY_STORE, { keyPath: 'id', autoIncrement: true });
+            }
+        };
+        req.onsuccess = (e) => { galleryDB = e.target.result; resolve(galleryDB); };
+        req.onerror = (e) => reject(e.target.error);
+    });
+}
+
+function saveRecordingToGallery(blob, mimeType) {
+    return openGalleryDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(GALLERY_STORE, 'readwrite');
+        const store = tx.objectStore(GALLERY_STORE);
+        const record = { blob, mimeType, createdAt: Date.now() };
+        const req = store.add(record);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = (e) => reject(e.target.error);
+    }));
+}
+
+function getAllRecordings() {
+    return openGalleryDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(GALLERY_STORE, 'readonly');
+        const store = tx.objectStore(GALLERY_STORE);
+        const req = store.getAll();
+        req.onsuccess = () => resolve(req.result.sort((a, b) => b.createdAt - a.createdAt));
+        req.onerror = (e) => reject(e.target.error);
+    }));
+}
+
+function deleteRecording(id) {
+    return openGalleryDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(GALLERY_STORE, 'readwrite');
+        const store = tx.objectStore(GALLERY_STORE);
+        const req = store.delete(id);
+        req.onsuccess = () => resolve();
+        req.onerror = (e) => reject(e.target.error);
+    }));
+}
+
+function formatGalleryDate(ts) {
+    const d = new Date(ts);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}.${pad(d.getMonth()+1)}.${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/* ── 갤러리 모달 열기/닫기 ── */
+function openGallery() {
+    const modal = document.getElementById('gallery-modal');
+    modal.classList.add('show');
+    renderGallery();
+}
+
+function closeGallery() {
+    document.getElementById('gallery-modal').classList.remove('show');
+    // 재생 중인 영상 멈추기
+    document.querySelectorAll('#gallery-body video').forEach(v => v.pause());
+}
+
+function renderGallery() {
+    const body = document.getElementById('gallery-body');
+    body.innerHTML = '<div class="gallery-empty">불러오는 중...</div>';
+
+    getAllRecordings().then(records => {
+        if (!records.length) {
+            body.innerHTML = '<div class="gallery-empty">아직 저장된 영상이 없어요.<br>녹화를 마치면 자동으로 여기에 모여요!</div>';
+            return;
+        }
+
+        body.innerHTML = '';
+        records.forEach(rec => {
+            const url = URL.createObjectURL(rec.blob);
+            const card = document.createElement('div');
+            card.className = 'gallery-item';
+            card.innerHTML = `
+                <video src="${url}" controls playsinline></video>
+                <div class="gallery-item-info">
+                    <div class="gallery-item-date">${formatGalleryDate(rec.createdAt)}</div>
+                    <div class="gallery-item-actions">
+                        <button class="gallery-btn-dl">💾 저장</button>
+                        <button class="gallery-btn-del">🗑️ 삭제</button>
+                    </div>
+                </div>
+            `;
+            card.querySelector('.gallery-btn-dl').addEventListener('click', () => downloadGalleryItem(rec, url));
+            card.querySelector('.gallery-btn-del').addEventListener('click', () => removeGalleryItem(rec.id, card, url));
+            body.appendChild(card);
+        });
+    }).catch(err => {
+        console.warn('갤러리 불러오기 실패:', err);
+        body.innerHTML = '<div class="gallery-empty">갤러리를 불러올 수 없어요.</div>';
+    });
+}
+
+function downloadGalleryItem(rec, url) {
+    const ext = (rec.mimeType || '').includes('mp4') ? 'mp4' : 'webm';
+    const filename = `강아지똥_마법의무대_${rec.id}.${ext}`;
+    try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        showToast('💾 영상이 저장되었습니다!');
+    } catch(e) {
+        const win = window.open(url, '_blank');
+        if (win) showToast('새 창에서 영상이 열렸어요. 길게 눌러 저장해주세요.');
+        else showToast('저장에 실패했어요.');
+    }
+}
+
+function removeGalleryItem(id, cardEl, url) {
+    if (!confirm('이 영상을 삭제할까요? 삭제하면 되돌릴 수 없어요.')) return;
+    deleteRecording(id).then(() => {
+        URL.revokeObjectURL(url);
+        cardEl.remove();
+        showToast('🗑️ 영상이 삭제되었어요.');
+        // 모두 삭제됐다면 빈 상태 메시지 표시
+        const body = document.getElementById('gallery-body');
+        if (!body.querySelector('.gallery-item')) {
+            body.innerHTML = '<div class="gallery-empty">아직 저장된 영상이 없어요.<br>녹화를 마치면 자동으로 여기에 모여요!</div>';
+        }
+    }).catch(err => {
+        console.warn('삭제 실패:', err);
+        showToast('삭제에 실패했어요.');
+    });
+}
 
 /* ─────────────────────────────────────────
    인트로 화면 열기 / 닫기
