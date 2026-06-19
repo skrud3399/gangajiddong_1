@@ -1463,7 +1463,11 @@ function handleBgUpload(e) {
         img.onload = () => {
             bgImage = img;
             showToast('✨ 배경이 설정되었습니다!');
-            if (camStream) setStatus('✨ 배경 준비 완료! 이제 녹화를 시작해 보세요.', 'ok');
+            if (camStream) {
+                setStatus(segmentationReady
+                    ? '✨ 배경 준비 완료! 인물만 쏙 합성됐어요. 녹화를 시작해 보세요.'
+                    : '✨ 배경이 적용됐어요! (오른쪽 작은 화면에서 모습이 보여요)', 'ok');
+            }
         };
         img.src = ev.target.result;
     };
@@ -1530,11 +1534,7 @@ async function startCamera() {
 
     try { await video.play(); } catch(e) { console.warn('video.play 실패:', e); }
 
-    // 인물 분리(세그멘테이션) 초기화 시도 — 실패해도 카메라는 정상 진행
-    setStatus('⏳ 인물 분리 기능을 준비 중이에요...', '');
-    await initSegmentation();
-
-    // 캔버스에 실시간으로 그리기 시작
+    // 캔버스에 실시간으로 그리기 시작 (세그멘테이션을 기다리지 않고 바로 시작)
     canvas.style.display = 'block';
     preview.style.display = 'none';
     if (rafId) cancelAnimationFrame(rafId);
@@ -1542,11 +1542,19 @@ async function startCamera() {
 
     camBtn.disabled = false;
     camBtn.textContent = '📷 카메라 켜기';
-    setStatus(segmentationReady
-        ? '🎭 카메라 준비 완료! 배경을 올리면 인물만 쏙 합성돼요.'
-        : '🎭 카메라 준비 완료! (인물 분리 기능 없이 일반 합성으로 동작해요)', 'ok');
+    setStatus('🎭 카메라 준비 완료! 배경을 올리거나 바로 녹화할 수 있어요.', 'ok');
     showStep(2);
     showToast('📷 카메라가 켜졌어요!');
+
+    // 인물 분리(세그멘테이션)는 백그라운드에서 준비 — 카메라 시작을 늦추지 않음
+    initSegmentation().then(() => {
+        if (segmentationReady) {
+            console.log('✅ 인물 분리 준비 완료');
+            if (bgImage) showToast('✨ 인물 분리가 준비됐어요! 더 또렷하게 합성됩니다.');
+        } else {
+            console.warn('⚠️ 인물 분리를 사용할 수 없어요. 작은 화면(PIP) 모드로 동작합니다.');
+        }
+    });
 }
 
 /* ── 인물 분리(세그멘테이션) 초기화 ── */
@@ -1563,37 +1571,41 @@ function initSegmentation() {
             return resolve();
         }
 
+        let settled = false;
+        const finish = (ready) => {
+            if (settled) return;
+            settled = true;
+            segmentationReady = ready;
+            resolve();
+        };
+
         try {
             selfieSegmentation = new SelfieSegmentation({
                 locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
             });
             selfieSegmentation.setOptions({ modelSelection: 1 });
+
+            // onResults가 실제로 호출되어야 진짜로 준비된 것 (send()의 Promise 완료와는 별개)
             selfieSegmentation.onResults((results) => {
                 latestSegMask = results.segmentationMask;
                 segmentationBusy = false;
+                finish(true); // 첫 결과가 도착한 순간이 진짜 "준비 완료" 시점
             });
 
-            // 첫 프레임 전송 — 성공 여부로 사용 가능 여부 판단
+            // 충분한 시간(8초)을 기다려도 결과가 안 오면 폴백
             const timeout = setTimeout(() => {
-                console.warn('세그멘테이션 초기화 시간 초과. 일반 합성 모드로 진행합니다.');
-                segmentationReady = false;
-                resolve();
-            }, 4000);
+                console.warn('세그멘테이션 결과가 시간 내에 도착하지 않았어요. 일반 합성 모드로 진행합니다.');
+                finish(false);
+            }, 8000);
 
-            selfieSegmentation.send({ image: video }).then(() => {
+            selfieSegmentation.send({ image: video }).catch(err => {
+                console.warn('세그멘테이션 첫 전송 실패:', err);
                 clearTimeout(timeout);
-                segmentationReady = true;
-                resolve();
-            }).catch(err => {
-                clearTimeout(timeout);
-                console.warn('세그멘테이션 초기화 실패:', err);
-                segmentationReady = false;
-                resolve();
+                finish(false);
             });
         } catch(err) {
             console.warn('세그멘테이션 생성 실패:', err);
-            segmentationReady = false;
-            resolve();
+            finish(false);
         }
     });
 }
@@ -1617,14 +1629,16 @@ function drawLoop() {
     ctx.save();
 
     if (bgImage && segmentationReady && latestSegMask) {
-        // ── 정확한 인물 분리 합성 ──
+        // ── 정확한 인물 분리 합성 (크로마키처럼 사람만 잘라내기) ──
         // 1) 배경 이미지를 먼저 깐다
         ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
 
-        // 2) 오프스크린에 "사람만" 그려서 올린다 (마스크로 잘라내기)
+        // 2) 오프스크린에 "사람만" 그려서 올린다 (마스크로 잘라내기, 경계는 살짝 부드럽게)
         offCtx.save();
         offCtx.clearRect(0, 0, offCanvas.width, offCanvas.height);
+        offCtx.filter = 'blur(1.5px)';
         offCtx.drawImage(latestSegMask, 0, 0, offCanvas.width, offCanvas.height);
+        offCtx.filter = 'none';
         offCtx.globalCompositeOperation = 'source-in';
         offCtx.drawImage(video, 0, 0, offCanvas.width, offCanvas.height);
         offCtx.restore();
@@ -1632,9 +1646,39 @@ function drawLoop() {
         ctx.drawImage(offCanvas, 0, 0, canvas.width, canvas.height);
 
     } else if (bgImage) {
-        // 세그멘테이션 미지원 환경 — 배경 위에 카메라 영상을 그대로 겹쳐 보여줌
+        // ── 인물 분리가 아직 준비되지 않은 경우의 임시 화면 ──
+        // 배경은 확실히 가득 채워서 보여주고, 카메라 영상은 작은 화면(PIP)으로 모서리에 띄운다.
+        // (배경이 안 보인다는 느낌을 주지 않도록, 전체를 덮어 합성하지 않음)
         ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const pipW = canvas.width * 0.34;
+        const pipH = pipW * (canvas.height / canvas.width);
+        const pipX = canvas.width - pipW - 16;
+        const pipY = canvas.height - pipH - 16;
+
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.4)';
+        ctx.shadowBlur = 14;
+        ctx.fillStyle = '#fff';
+        roundRectPath(ctx, pipX - 4, pipY - 4, pipW + 8, pipH + 8, 14);
+        ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        roundRectPath(ctx, pipX, pipY, pipW, pipH, 12);
+        ctx.clip();
+        ctx.drawImage(video, pipX, pipY, pipW, pipH);
+        ctx.restore();
+
+        // 안내 문구 (인물 분리 준비 중)
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        roundRectPath(ctx, 12, 12, 230, 30, 14);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = '14px Jua';
+        ctx.textAlign = 'left';
+        ctx.fillText('✨ 인물 분리 준비 중...', 22, 33);
+
     } else {
         // 배경 없을 때: 카메라 영상만
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -1651,6 +1695,17 @@ function drawLoop() {
 
     ctx.restore();
     rafId = requestAnimationFrame(drawLoop);
+}
+
+/* 둥근 사각형 경로 헬퍼 */
+function roundRectPath(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y,     x + w, y + h, r);
+    c.arcTo(x + w, y + h, x,     y + h, r);
+    c.arcTo(x,     y + h, x,     y,     r);
+    c.arcTo(x,     y,     x + w, y,     r);
+    c.closePath();
 }
 
 /* ── 녹화 타이머 ── */
